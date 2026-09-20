@@ -3,9 +3,13 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+.build-venv/
+.build-venv312/
+.build-tools/
 build/
+diagnostic/
+diagnostic312/
 dist/
 *.cvault
 *.cvsig
 *.pem
-
