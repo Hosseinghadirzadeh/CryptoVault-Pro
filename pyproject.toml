@@ -15,6 +15,9 @@ dependencies = [
   "blake3>=1.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 cryptovault = "cryptovault.app:main"
 cryptovault-cli = "cryptovault.cli:main"

@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
-from pathlib import Path
-
 from .core.container import decrypt_file, encrypt_file
 from .core.hashing import hash_file
 from .core.keys import generate_private_key, load_private_key, load_public_key, save_private_key, save_public_key

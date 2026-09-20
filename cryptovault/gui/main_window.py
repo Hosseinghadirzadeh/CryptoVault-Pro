@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QStandardPaths, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QAction, QClipboard
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame,
+    QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QSpinBox, QStackedWidget, QTableWidget,
     QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
-
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from cryptovault import __version__
 from cryptovault.core.container import decrypt_container, decrypt_file, dumps_container, encrypt_bytes, encrypt_file, loads_container, validate_container_checksum
@@ -241,14 +236,17 @@ class KeyManagerPage(QWidget):
     def __init__(self, window):
         super().__init__(); self.window = window; layout = QVBoxLayout(self); layout.addLayout(page_header("Key manager", "Generate standard PEM keys. Private keys are always encrypted before export."))
         form_frame, form_layout = card("Generate a key pair"); form = QFormLayout(); self.kind = QComboBox(); self.kind.addItems(["RSA-4096", "X25519", "Ed25519"]); self.private_path = PathPicker("Encrypted private key .pem", lambda edit: _save_file(edit, "PEM (*.pem)")); self.public_path = PathPicker("Public key .pem", lambda edit: _save_file(edit, "PEM (*.pem)")); self.password = QLineEdit(); self.password.setEchoMode(QLineEdit.Password); form.addRow("Key type", self.kind); form.addRow("Private key", self.private_path); form.addRow("Public key", self.public_path); form.addRow("Export password", self.password); form_layout.addLayout(form)
-        generate = QPushButton("Generate and export"); generate.setObjectName("Primary"); generate.clicked.connect(self.generate); form_layout.addWidget(generate, 0, Qt.AlignLeft); layout.addWidget(form_frame)
+        generate = QPushButton("Generate and export"); generate.setObjectName("Primary"); generate.clicked.connect(self.generate); form_layout.addWidget(generate, 0, Qt.AlignLeft); self.progress = QProgressBar(); form_layout.addWidget(self.progress); layout.addWidget(form_frame)
         inspect_frame, inspect_layout = card("Inspect an imported public key"); self.inspect_path = PathPicker("Public key .pem", lambda edit: _open_file(edit, "PEM (*.pem)")); inspect = QPushButton("Inspect key"); inspect.clicked.connect(self.inspect); self.details = QPlainTextEdit(); self.details.setReadOnly(True); inspect_layout.addWidget(self.inspect_path); inspect_layout.addWidget(inspect, 0, Qt.AlignLeft); inspect_layout.addWidget(self.details); layout.addWidget(inspect_frame, 1)
 
     def generate(self):
         try:
             if not self.private_path.text() or not self.public_path.text(): raise ValueError("Choose both export paths")
-            key = generate_private_key(self.kind.currentText()); save_private_key(key, self.private_path.text(), self.password.text()); save_public_key(key, self.public_path.text()); info = key_description(key); self.details.setPlainText(json.dumps(info, indent=2)); self.window.record("Generate key", self.public_path.text(), info["type"])
-            self.window.info("Key generated", "Keep the private key and its password backed up separately.")
+            kind, private_path, public_path, password = self.kind.currentText(), self.private_path.text(), self.public_path.text(), self.password.text()
+            def task(progress=None):
+                progress(5); key = generate_private_key(kind); progress(70); save_private_key(key, private_path, password); save_public_key(key, public_path); progress(100); return key_description(key)
+            def done(info): self.details.setPlainText(json.dumps(info, indent=2)); self.window.record("Generate key", public_path, info["type"])
+            self.window.run_worker(task, (), {}, self.progress, done)
         except Exception as exc: self.window.error(str(exc))
 
     def inspect(self):
@@ -297,19 +295,22 @@ class SignaturePage(QWidget):
         super().__init__(); self.window = window; layout = QVBoxLayout(self); layout.addLayout(page_header("Digital signatures", "Ed25519 detached signatures prove authenticity and detect file modification.")); tabs = QTabWidget(); tabs.addTab(self._sign(), "Sign"); tabs.addTab(self._verify(), "Verify"); layout.addWidget(tabs)
 
     def _sign(self):
-        page = QWidget(); form = QFormLayout(page); self.sign_file = PathPicker("File", lambda edit: _open_file(edit)); self.sign_key = PathPicker("Ed25519 private key", lambda edit: _open_file(edit, "PEM (*.pem)")); self.sign_password = QLineEdit(); self.sign_password.setEchoMode(QLineEdit.Password); self.sign_output = PathPicker("Signature .cvsig", lambda edit: _save_file(edit, "CryptoVault signature (*.cvsig)")); button = QPushButton("Create signature"); button.setObjectName("Primary"); button.clicked.connect(self.sign); form.addRow("File", self.sign_file); form.addRow("Private key", self.sign_key); form.addRow("Key password", self.sign_password); form.addRow("Output", self.sign_output); form.addRow(button); return page
+        page = QWidget(); form = QFormLayout(page); self.sign_file = PathPicker("File", lambda edit: _open_file(edit)); self.sign_key = PathPicker("Ed25519 private key", lambda edit: _open_file(edit, "PEM (*.pem)")); self.sign_password = QLineEdit(); self.sign_password.setEchoMode(QLineEdit.Password); self.sign_output = PathPicker("Signature .cvsig", lambda edit: _save_file(edit, "CryptoVault signature (*.cvsig)")); self.sign_progress = QProgressBar(); button = QPushButton("Create signature"); button.setObjectName("Primary"); button.clicked.connect(self.sign); form.addRow("File", self.sign_file); form.addRow("Private key", self.sign_key); form.addRow("Key password", self.sign_password); form.addRow("Output", self.sign_output); form.addRow(self.sign_progress); form.addRow(button); return page
 
     def _verify(self):
-        page = QWidget(); form = QFormLayout(page); self.verify_file = PathPicker("File", lambda edit: _open_file(edit)); self.verify_signature = PathPicker("Signature .cvsig", lambda edit: _open_file(edit, "CryptoVault signature (*.cvsig)")); self.verify_key = PathPicker("Ed25519 public key", lambda edit: _open_file(edit, "PEM (*.pem)")); self.verify_result = QLabel("Not verified"); button = QPushButton("Verify signature"); button.setObjectName("Primary"); button.clicked.connect(self.verify); form.addRow("File", self.verify_file); form.addRow("Signature", self.verify_signature); form.addRow("Public key", self.verify_key); form.addRow(button); form.addRow("Result", self.verify_result); return page
+        page = QWidget(); form = QFormLayout(page); self.verify_file = PathPicker("File", lambda edit: _open_file(edit)); self.verify_signature = PathPicker("Signature .cvsig", lambda edit: _open_file(edit, "CryptoVault signature (*.cvsig)")); self.verify_key = PathPicker("Ed25519 public key", lambda edit: _open_file(edit, "PEM (*.pem)")); self.verify_progress = QProgressBar(); self.verify_result = QLabel("Not verified"); button = QPushButton("Verify signature"); button.setObjectName("Primary"); button.clicked.connect(self.verify); form.addRow("File", self.verify_file); form.addRow("Signature", self.verify_signature); form.addRow("Public key", self.verify_key); form.addRow(self.verify_progress); form.addRow(button); form.addRow("Result", self.verify_result); return page
 
     def sign(self):
         try:
-            key = load_private_key(self.sign_key.text(), self.sign_password.text() or None); create_detached_signature(self.sign_file.text(), key, self.sign_output.text()); self.window.record("Sign file", self.sign_file.text(), "Ed25519"); self.window.info("Signature created", "The detached .cvsig file can be shared with the original file.")
+            key = load_private_key(self.sign_key.text(), self.sign_password.text() or None); source, output = self.sign_file.text(), self.sign_output.text()
+            self.window.run_worker(create_detached_signature, (source, key, output), {}, self.sign_progress, lambda _: self.window.record("Sign file", source, "Ed25519"))
         except Exception as exc: self.window.error(str(exc))
 
     def verify(self):
         try:
-            valid = verify_detached_signature(self.verify_file.text(), self.verify_signature.text(), load_public_key(self.verify_key.text())); self.verify_result.setText("VALID — signature and file digest match" if valid else "INVALID — do not trust this file"); self.verify_result.setStyleSheet("color: #65e3bd; font-weight: 700;" if valid else "color: #ef6b73; font-weight: 700;"); self.window.record("Verify signature", self.verify_file.text(), "Ed25519", "Valid" if valid else "Invalid")
+            source, signature, key = self.verify_file.text(), self.verify_signature.text(), load_public_key(self.verify_key.text())
+            def done(valid): self.verify_result.setText("VALID — signature and file digest match" if valid else "INVALID — do not trust this file"); self.verify_result.setStyleSheet("color: #65e3bd; font-weight: 700;" if valid else "color: #ef6b73; font-weight: 700;"); self.window.record("Verify signature", source, "Ed25519", "Valid" if valid else "Invalid")
+            self.window.run_worker(verify_detached_signature, (source, signature, key), {}, self.verify_progress, done)
         except Exception as exc: self.window.error(str(exc))
 
 
